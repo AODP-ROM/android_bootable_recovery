@@ -21,8 +21,6 @@
 
 #include <stack>
 
-#define KEY_FLAG_ABS 0x8000
-
 struct menu;
 
 class Device : public VoldWatcher {
@@ -94,15 +92,12 @@ class Device : public VoldWatcher {
     // actually perform it here and return NO_ACTION.
     virtual BuiltinAction InvokeMenuItem(int menu_position);
 
-    virtual void GoHome();
-
     static const int kNoAction = -1;
     static const int kHighlightUp = -2;
     static const int kHighlightDown = -3;
     static const int kInvokeItem = -4;
     static const int kGoBack = -5;
-    static const int kGoHome = -6;
-    static const int kRefresh = -7;
+    static const int kRefresh = -6;
 
     // Called before and after we do a wipe data/factory reset operation,
     // either via a reboot from the main system with the --wipe_data flag,

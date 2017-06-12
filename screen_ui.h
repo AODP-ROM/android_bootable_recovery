@@ -23,15 +23,11 @@
 #include "ui.h"
 #include "minui/minui.h"
 
-#define SYSBAR_BACK     0x01
-#define SYSBAR_HOME     0x02
-
 // Implementation of RecoveryUI appropriate for devices with a screen
 // (shows an icon + a progress bar, text logging, menu, etc.)
 class ScreenRecoveryUI : public RecoveryUI {
   public:
     ScreenRecoveryUI();
-    virtual ~ScreenRecoveryUI() { }
 
     void Init();
     void SetLocale(const char* locale);
@@ -41,33 +37,26 @@ class ScreenRecoveryUI : public RecoveryUI {
     void SetSystemUpdateText(bool security_update);
 
     // progress indicator
-    void SetProgressType(ProgressType type);
-    void ShowProgress(float portion, float seconds);
-    void SetProgress(float fraction);
+    void SetProgressType(ProgressType type) override;
+    void ShowProgress(float portion, float seconds) override;
+    void SetProgress(float fraction) override;
 
-    void SetStage(int current, int max);
+    void SetStage(int current, int max) override;
 
     // text log
-    void ShowText(bool visible);
-    bool IsTextVisible();
-    bool WasTextEverVisible();
+    void ShowText(bool visible) override;
+    bool IsTextVisible() override;
+    bool WasTextEverVisible() override;
 
     // printing messages
     void Print(const char* fmt, ...) __printflike(2, 3);
     void PrintOnScreenOnly(const char* fmt, ...) __printflike(2, 3);
     void ShowFile(const char* filename);
 
-    // sysbar
-    int  GetSysbarHeight() { return gr_get_height(sysbarBackHighlightIcon); }
-    int  GetSysbarState() { return sysbar_state; }
-    void SetSysbarState(int state);
-
     // menu display
-    virtual int MenuItemStart() const { return menu_item_start_; }
-    virtual int MenuItemHeight() const { return 3 * char_height_; }
     void StartMenu(const char* const * headers, const char* const * items,
                    int initial_selection);
-    int SelectMenu(int sel, bool abs = false);
+    int SelectMenu(int sel);
     void EndMenu();
 
     void KeyLongPress(int);
@@ -83,8 +72,6 @@ class ScreenRecoveryUI : public RecoveryUI {
     Icon currentIcon;
 
     const char* locale;
-    bool intro_done;
-    int current_frame;
 
     // The scale factor from dp to pixels. 1.0 for mdpi, 4.0 for xxxhdpi.
     float density_;
@@ -101,11 +88,6 @@ class ScreenRecoveryUI : public RecoveryUI {
     GRSurface** introFrames;
     GRSurface** loopFrames;
 
-    GRSurface* headerIcon;
-    GRSurface* sysbarBackIcon;
-    GRSurface* sysbarBackHighlightIcon;
-    GRSurface* sysbarHomeIcon;
-    GRSurface* sysbarHomeHighlightIcon;
     GRSurface* progressBarEmpty;
     GRSurface* progressBarFill;
     GRSurface* stageMarkerEmpty;
@@ -119,7 +101,6 @@ class ScreenRecoveryUI : public RecoveryUI {
     // true when both graphics pages are the same (except for the progress bar).
     bool pagesIdentical;
 
-    size_t log_text_cols_, log_text_rows_;
     size_t text_cols_, text_rows_;
 
     // Log text overlay, displayed when a magic key is pressed.
@@ -131,55 +112,40 @@ class ScreenRecoveryUI : public RecoveryUI {
 
     char** menu_;
     const char* const* menu_headers_;
-    int header_items;
     bool show_menu;
     int menu_items, menu_sel;
-
-    int menu_show_start_;
-    int max_menu_rows_;
-
-    int sysbar_state;
 
     // An alternate text screen, swapped with 'text_' when we're viewing a log file.
     char** file_viewer_text_;
 
-    int menu_item_start_;
-
     pthread_t progress_thread_;
-    pthread_cond_t progressCondition;
 
     // Number of intro frames and loop frames in the animation.
-    int intro_frames;
-    int loop_frames;
+    size_t intro_frames;
+    size_t loop_frames;
+
+    size_t current_frame;
+    bool intro_done;
 
     // Number of frames per sec (default: 30) for both parts of the animation.
     int animation_fps;
 
     int stage, max_stage;
 
+    int char_width_;
+    int char_height_;
     pthread_mutex_t updateMutex;
     bool rtl_locale;
 
-    void draw_background_locked();
-    void draw_foreground_locked();
+    virtual void InitTextParams();
 
+    virtual void draw_background_locked();
+    virtual void draw_foreground_locked();
     bool rainbow;
     int wrap_count;
-
-    int log_char_height_, log_char_width_;
-    int char_height_, char_width_;
-
-    int header_height_, header_width_;
-    int sysbar_height_;
-    int text_first_row_;
-
-    bool update_waiting;
-
-    int  draw_header_icon();
-    void draw_menu_item(int textrow, const char *text, int selected);
-    void draw_sysbar();
-    void draw_screen_locked();
-    void update_screen_locked();
+    virtual void draw_screen_locked();
+    virtual void update_screen_locked();
+    virtual void update_progress_locked();
 
     GRSurface* GetCurrentFrame();
     GRSurface* GetCurrentText();
@@ -187,8 +153,8 @@ class ScreenRecoveryUI : public RecoveryUI {
     static void* ProgressThreadStartRoutine(void* data);
     void ProgressThreadLoop();
 
-    void ShowFile(FILE*);
-    void PrintV(const char*, bool, va_list);
+    virtual void ShowFile(FILE*);
+    virtual void PrintV(const char*, bool, va_list);
     void PutChar(char);
     void ClearText();
 
@@ -197,9 +163,9 @@ class ScreenRecoveryUI : public RecoveryUI {
     void LoadLocalizedBitmap(const char* filename, GRSurface** surface);
 
     int PixelsFromDp(int dp);
-    int GetAnimationBaseline();
-    int GetProgressBaseline();
-    int GetTextBaseline();
+    virtual int GetAnimationBaseline();
+    virtual int GetProgressBaseline();
+    virtual int GetTextBaseline();
 
     void DrawHorizontalRule(int* y);
     void DrawTextLine(int x, int* y, const char* line, bool bold);

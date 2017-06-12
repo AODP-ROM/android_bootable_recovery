@@ -31,8 +31,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sys/mount.h>
-#include <fs_mgr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -74,8 +72,6 @@
 extern "C" {
 #include "recovery_cmds.h"
 }
-
-#define UFS_DEV_SDCARD_BLK_PATH "/dev/block/mmcblk0p1"
 
 struct selabel_handle *sehandle;
 
@@ -236,48 +232,6 @@ extern "C" int toybox_driver(int argc, char **argv);
 
 static const int MAX_ARG_LENGTH = 4096;
 static const int MAX_ARGS = 100;
-
-#ifdef USE_MDTP
-
-#define MAX_CMD_LINE_LEN         (2048)
-
-static int is_mdtp_activated()
-{
-    char cmdline[MAX_CMD_LINE_LEN];
-    char *ptr;
-    int fd;
-    int mdtp_activated = 0;
-
-    fd = open("/proc/cmdline", O_RDONLY);
-    if (fd >= 0) {
-        int n = read(fd, cmdline, sizeof(cmdline) - 1);
-        if (n < 0)
-            n = 0;
-        /* get rid of trailing newline, it happens */
-        if (n > 0 && cmdline[n-1] == '\n') n--;
-        cmdline[n] = 0;
-        close(fd);
-    } else {
-        cmdline[0] = 0;
-    }
-
-    /* Look for the string "mdtp" in kernel cmdline, indicating that MDTP is activated.*/
-    ptr = cmdline;
-    while (ptr && *ptr) {
-        char *x = strchr(ptr, ' ');
-        if (x != 0)
-            *x++ = 0;
-        if (!strcmp(ptr,"mdtp")) {
-            mdtp_activated = 1;
-            break;
-        }
-
-        ptr = x;
-    }
-
-    return mdtp_activated;
-}
-#endif /* USE_MDTP */
 
 // open a given path, mounting partitions as necessary
 FILE* fopen_path(const char *path, const char *mode) {
@@ -678,9 +632,6 @@ static bool erase_volume(const char* volume, bool force = false) {
 
     saved_log_file* head = NULL;
 
-    ui->SetBackground(RecoveryUI::ERASING);
-    ui->SetProgressType(RecoveryUI::INDETERMINATE);
-
     if (!force && is_cache) {
         // If we're reformatting /cache, we load any past logs
         // (i.e. "/cache/recovery/last_*") and the current log
@@ -727,6 +678,9 @@ static bool erase_volume(const char* volume, bool force = false) {
     }
 
     ui->Print("Formatting %s...\n", volume);
+
+    ui->SetBackground(RecoveryUI::ERASING);
+    ui->SetProgressType(RecoveryUI::INDETERMINATE);
 
     if (volume[0] == '/') {
         ensure_path_unmounted(volume);
@@ -790,24 +744,11 @@ get_menu_selection(const char* const * headers, const char* const * items,
     // accidentally trigger menu items.
     ui->FlushKeys();
 
-    // Count items to detect valid values for absolute selection
-    int header_count = 0;
-    if (headers) {
-        while (headers[header_count] != NULL)
-            ++header_count;
-    }
-    int item_count = 0;
-    while (items[item_count] != NULL)
-        ++item_count;
-
     ui->StartMenu(headers, items, initial_selection);
     int selected = initial_selection;
     int chosen_item = -1;
 
-    while (chosen_item < 0 &&
-            chosen_item != Device::kGoBack &&
-            chosen_item != Device::kGoHome &&
-            chosen_item != Device::kRefresh) {
+    while (chosen_item < 0 && chosen_item != Device::kGoBack && chosen_item != Device::kRefresh) {
         int key = ui->WaitKey();
         int visible = ui->IsTextVisible();
 
@@ -828,20 +769,6 @@ get_menu_selection(const char* const * headers, const char* const * items,
 
         int action = device->HandleMenuKey(key, visible);
 
-        if (action >= 0) {
-            action &= ~KEY_FLAG_ABS;
-            if (action < header_count || action >= header_count + item_count) {
-                action = Device::kNoAction;
-            }
-            else {
-                // Absolute selection.  Update selected item and give some
-                // feedback in the UI by selecting the item for a short time.
-                selected = ui->SelectMenu(action, true);
-                action = Device::kInvokeItem;
-                usleep(50*1000);
-            }
-        }
-
         if (action < 0) {
             switch (action) {
                 case Device::kHighlightUp:
@@ -858,9 +785,6 @@ get_menu_selection(const char* const * headers, const char* const * items,
                 case Device::kGoBack:
                     chosen_item = Device::kGoBack;
                     break;
-                case Device::kGoHome:
-                    chosen_item = Device::kGoHome;
-                    break;
                 case Device::kRefresh:
                     chosen_item = Device::kRefresh;
                     break;
@@ -871,9 +795,6 @@ get_menu_selection(const char* const * headers, const char* const * items,
     }
 
     ui->EndMenu();
-    if (chosen_item == Device::kGoHome) {
-        device->GoHome();
-    }
     return chosen_item;
 }
 
@@ -947,11 +868,6 @@ static char* browse_directory(const char* path, Device* device) {
     int chosen_item = 0;
     while (true) {
         chosen_item = get_menu_selection(headers, zips, 1, chosen_item, device);
-        if (chosen_item == Device::kGoHome) {
-            // go up and stop browsing
-            result = strdup("");
-            break;
-        }
         if (chosen_item == 0 || chosen_item == Device::kGoBack) {
             // go up but continue browsing (if the caller is update_directory)
             result = NULL;
@@ -1254,7 +1170,6 @@ static void choose_recovery_file(Device* device) {
 
     while (true) {
         int chosen_item = get_menu_selection(headers, entries, 1, 0, device);
-        if (chosen_item == Device::kGoHome) break;
         if (chosen_item == Device::kGoBack) break;
         if (chosen_item >= 0 && strcmp(entries[chosen_item], "Back") == 0) break;
 
@@ -1297,48 +1212,6 @@ static void run_graphics_test(Device* device) {
     ui->ShowText(true);
 }
 
-static int is_ufs_dev()
-{
-    char bootdevice[PROPERTY_VALUE_MAX] = {0};
-    property_get("ro.boot.bootdevice", bootdevice, "N/A");
-    ui->Print("ro.boot.bootdevice is: %s\n",bootdevice);
-    if (strlen(bootdevice) < strlen(".ufshc") + 1)
-        return 0;
-    return (!strncmp(&bootdevice[strlen(bootdevice) - strlen(".ufshc")],
-                            ".ufshc",
-                            sizeof(".ufshc")));
-}
-
-static int do_sdcard_mount_for_ufs()
-{
-    int rc = 0;
-    ui->Print("Update via sdcard on UFS dev.Mounting card\n");
-    Volume *v = volume_for_path("/sdcard");
-    if (v == NULL) {
-            ui->Print("Unknown volume for /sdcard.Check fstab\n");
-            goto error;
-    }
-    if (strncmp(v->fs_type, "vfat", sizeof("vfat"))) {
-            ui->Print("Unsupported format on the sdcard: %s\n",
-                            v->fs_type);
-            goto error;
-    }
-    rc = mount(UFS_DEV_SDCARD_BLK_PATH,
-                    v->mount_point,
-                    v->fs_type,
-                    v->flags,
-                    v->fs_options);
-    if (rc) {
-            ui->Print("Failed to mount sdcard : %s\n",
-                            strerror(errno));
-            goto error;
-    }
-    ui->Print("Done mounting sdcard\n");
-    return 0;
-error:
-    return -1;
-}
-
 // How long (in seconds) we wait for the fuse-provided package file to
 // appear, before timing out.
 #define SDCARD_INSTALL_TIMEOUT 10
@@ -1346,28 +1219,18 @@ error:
 static int apply_from_storage(Device* device, const std::string& id, bool* wipe_cache) {
     modified_flash = true;
 
-    if (is_ufs_dev()) {
-        if (do_sdcard_mount_for_ufs() != 0) {
-            return INSTALL_ERROR;
-        }
-    } else {
-        if (!vdc->volumeMount(id)) {
-            return INSTALL_ERROR;
-        }
+    if (!vdc->volumeMount(id)) {
+        return INSTALL_ERROR;
     }
 
     VolumeInfo vi = vdc->getVolume(id);
 
     char* path = browse_directory(vi.mInternalPath.c_str(), device);
-    if (path == NULL || *path == '\0') {
+    if (path == NULL) {
         ui->Print("\n-- No package file selected.\n");
         vdc->volumeUnmount(vi.mId);
-        free(path);
         return INSTALL_NONE;
     }
-
-    ui->ClearText();
-    ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
 
     ui->Print("\n-- Install %s ...\n", path);
     set_sdcard_update_bootloader_message();
@@ -1399,7 +1262,7 @@ static int apply_from_storage(Device* device, const std::string& id, bool* wipe_
 
         struct stat sb;
         if (stat(FUSE_SIDELOAD_HOST_PATHNAME, &sb) == -1) {
-            if (errno == ENOENT) {
+            if (errno == ENOENT && (now - start_time) < SDCARD_INSTALL_TIMEOUT-1) {
                 sleep(1);
 				now = time(NULL);
                 continue;
@@ -1465,9 +1328,6 @@ refresh:
     if (chosen == Device::kRefresh) {
         goto refresh;
     }
-    if (chosen == Device::kGoHome) {
-        return INSTALL_NONE;
-    }
     if (chosen == Device::kGoBack) {
         return INSTALL_NONE;
     }
@@ -1489,10 +1349,6 @@ refresh:
         status = apply_from_storage(device, id, &wipe_cache);
     }
 
-    if (status != INSTALL_SUCCESS && status != INSTALL_NONE) {
-        ui->Print("Install failed");
-    }
-
     return status;
 }
 
@@ -1506,7 +1362,7 @@ prompt_and_wait(Device* device, int status) {
         switch (status) {
             case INSTALL_SUCCESS:
             case INSTALL_NONE:
-                ui->SetBackground(RecoveryUI::NONE);
+                ui->SetBackground(RecoveryUI::NO_COMMAND);
                 break;
 
             case INSTALL_ERROR:
@@ -1551,25 +1407,23 @@ prompt_and_wait(Device* device, int status) {
                     break;
 
                 case Device::APPLY_UPDATE:
-                    {
-                        status = show_apply_update_menu(device);
+                    status = show_apply_update_menu(device);
 
-                        if (status == INSTALL_SUCCESS && should_wipe_cache) {
-                            if (!wipe_cache(false, device)) {
-                                status = INSTALL_ERROR;
-                            }
+                    if (status == INSTALL_SUCCESS && should_wipe_cache) {
+                        if (!wipe_cache(false, device)) {
+                            status = INSTALL_ERROR;
                         }
+                    }
 
-                        if (status >= 0 && status != INSTALL_NONE) {
-                            if (status != INSTALL_SUCCESS) {
-                                ui->SetBackground(RecoveryUI::ERROR);
-                                ui->Print("Installation aborted.\n");
-                                copy_logs();
-                            } else if (!ui->IsTextVisible()) {
-                                return Device::NO_ACTION;  // reboot if logs aren't visible
-                            } else {
-                                ui->Print("\nInstall complete.\n");
-                            }
+                    if (status >= 0 && status != INSTALL_NONE) {
+                        if (status != INSTALL_SUCCESS) {
+                            ui->SetBackground(RecoveryUI::ERROR);
+                            ui->Print("Installation aborted.\n");
+                            copy_logs();
+                        } else if (!ui->IsTextVisible()) {
+                            return Device::NO_ACTION;  // reboot if logs aren't visible
+                        } else {
+                            ui->Print("\nInstall complete.\n");
                         }
                     }
                     break;
@@ -1582,36 +1436,28 @@ prompt_and_wait(Device* device, int status) {
                     run_graphics_test(device);
                     break;
 
-                case Device::MOUNT_SYSTEM:
-#ifdef USE_MDTP
-                    if (is_mdtp_activated()) {
-                        ui->Print("Mounting /system forbidden by MDTP.\n");
-                    }
-                    else
-#endif
-                    {
-                        char system_root_image[PROPERTY_VALUE_MAX];
-                        property_get("ro.build.system_root_image", system_root_image, "");
-
-                        // For a system image built with the root directory (i.e.
-                        // system_root_image == "true"), we mount it to /system_root, and symlink /system
-                        // to /system_root/system to make adb shell work (the symlink is created through
-                        // the build system).
-                        // Bug: 22855115
-                        if (strcmp(system_root_image, "true") == 0) {
-                            if (ensure_path_mounted_at("/", "/system_root") != -1) {
-                                ui->Print("Mounted /system.\n");
-                            }
-                        } else {
-                            if (ensure_path_mounted("/system") != -1) {
-                                ui->Print("Mounted /system.\n");
-                            }
-                        }
-                    }
-                    break;
-
                 case Device::WIPE_SYSTEM:
                     wipe_system(device);
+                    break;
+
+                case Device::MOUNT_SYSTEM:
+                    char system_root_image[PROPERTY_VALUE_MAX];
+                    property_get("ro.build.system_root_image", system_root_image, "");
+
+                    // For a system image built with the root directory (i.e.
+                    // system_root_image == "true"), we mount it to /system_root, and symlink /system
+                    // to /system_root/system to make adb shell work (the symlink is created through
+                    // the build system).
+                    // Bug: 22855115
+                    if (strcmp(system_root_image, "true") == 0) {
+                        if (ensure_path_mounted_at("/", "/system_root") != -1) {
+                            ui->Print("Mounted /system.\n");
+                        }
+                    } else {
+                        if (ensure_path_mounted("/system") != -1) {
+                            ui->Print("Mounted /system.\n");
+                        }
+                    }
                     break;
             }
             if (status == Device::kRefresh) {
@@ -1961,8 +1807,6 @@ int main(int argc, char **argv) {
     bool shutdown_after = false;
     int retry_count = 0;
     bool security_update = false;
-    int status = INSTALL_SUCCESS;
-    bool mount_required = true;
 
     int arg;
     int option_index;
@@ -2072,25 +1916,13 @@ int main(int argc, char **argv) {
             else
                 printf("modified_path allocation failed\n");
         }
-        if (!strncmp("/sdcard", update_package, 7)) {
-            //If this is a UFS device lets mount the sdcard ourselves.Depending
-            //on if the device is UFS or EMMC based the path to the sdcard
-            //device changes so we cannot rely on the block dev path from
-            //recovery.fstab
-            if (is_ufs_dev()) {
-                    if(do_sdcard_mount_for_ufs() != 0) {
-                            status = INSTALL_ERROR;
-                            goto error;
-                    }
-                    mount_required = false;
-            } else {
-                    ui->Print("Update via sdcard on EMMC dev. Using path from fstab\n");
-            }
-        }
     }
     printf("\n");
+
     property_list(print_property, NULL);
     printf("\n");
+
+    int status = INSTALL_SUCCESS;
 
 #ifdef HAVE_OEMLOCK
     if (oem_lock == OEM_LOCK_UNLOCK) {
@@ -2104,6 +1936,7 @@ int main(int argc, char **argv) {
         status = INSTALL_SUCCESS;
     } else
 #endif
+
     if (update_package != NULL) {
         // It's not entirely true that we will modify the flash. But we want
         // to log the update attempt since update_package is non-NULL.
@@ -2123,7 +1956,7 @@ int main(int argc, char **argv) {
             status = INSTALL_SKIPPED;
         } else {
             status = install_package(update_package, &should_wipe_cache,
-                                     TEMPORARY_INSTALL_FILE, mount_required, retry_count);
+                                     TEMPORARY_INSTALL_FILE, true, retry_count);
             if (status == INSTALL_SUCCESS && should_wipe_cache) {
                 wipe_cache(false, device);
             }
@@ -2199,7 +2032,7 @@ int main(int argc, char **argv) {
         // Always show menu if no command is specified
         ui->ShowText(true);
     }
-error:
+
     if (!sideload_auto_reboot && (status == INSTALL_ERROR || status == INSTALL_CORRUPT)) {
         copy_logs();
         ui->SetBackground(RecoveryUI::ERROR);

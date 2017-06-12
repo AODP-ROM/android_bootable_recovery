@@ -24,7 +24,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <setjmp.h>
-#include <sys/mount.h>
 
 #include <chrono>
 #include <limits>
@@ -383,6 +382,14 @@ try_update_binary(const char* path, ZipArchive* zip, bool* wipe_cache,
     }
 
     pid_t pid = fork();
+
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        LOGE("Failed to fork update binary: %s\n", strerror(errno));
+        return INSTALL_ERROR;
+    }
+
     if (pid == 0) {
         umask(022);
         close(pipefd[0]);
@@ -459,68 +466,6 @@ try_update_binary(const char* path, ZipArchive* zip, bool* wipe_cache,
 
     return INSTALL_SUCCESS;
 }
-
-#ifdef USE_MDTP
-static int
-mdtp_update()
-{
-    const char** args = (const char**)malloc(sizeof(char*) * 2);
-
-    if (args == NULL) {
-        LOGE("Failed to allocate memory for MDTP FOTA app arguments\n");
-        return 0;
-    }
-
-    args[0] = "/sbin/mdtp_fota";
-    args[1] = NULL;
-    int status = 0;
-
-    ui->Print("Running MDTP integrity verification and update...\n");
-
-    /* Make sure system partition is mounted, so MDTP can process its content. */
-    status = mount("/dev/block/bootdevice/by-name/system", "/system", "ext4",
-                 MS_NOATIME | MS_NODEV | MS_NODIRATIME |
-                 MS_RDONLY, "");
-
-    if (status) {
-        LOGE("Failed to mount the system partition, error=%s.\n", strerror(errno));
-        free(args);
-        return 0;
-    }
-
-    status = mount("/dev/block/bootdevice/by-name/modem", "/firmware", "vfat",
-                   MS_NOATIME | MS_NODEV | MS_NODIRATIME |
-                   MS_RDONLY, "");
-
-    if (status) {
-        LOGE("Failed to mount the modem (firmware) partition, error=%s.\n", strerror(errno));
-        free(args);
-        return 0;
-    }
-
-    status = 0;
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        execv(args[0], (char* const*)args);
-        LOGE("Can't run %s (%s)\n", args[0], strerror(errno));
-        _exit(-1);
-    }
-    if (pid > 0) {
-        LOGE("Waiting for MDTP FOTA to complete...\n");
-        pid = waitpid(pid, &status, 0);
-        LOGE("MDTP FOTA completed, status: %d\n", status);
-    }
-
-    /* Leave the system partition unmounted before we finish. */
-    umount("/system");
-    umount("/firmware");
-
-    free(args);
-
-    return (status > 0) ? 1 : 0;
-}
-#endif /* USE_MDTP */
 
 static int
 really_install_package(const char *path, bool* wipe_cache, bool needs_mount,
@@ -608,17 +553,6 @@ really_install_package(const char *path, bool* wipe_cache, bool needs_mount,
 
     sysReleaseMap(&map);
 
-#ifdef USE_MDTP
-    /* If MDTP update failed, return an error such that recovery will not finish. */
-    if (ret == INSTALL_SUCCESS) {
-        if (!mdtp_update()) {
-            ui->Print("Unable to verify integrity of /system for MDTP, update aborted.\n");
-            return INSTALL_ERROR;
-        }
-        ui->Print("Successfully verified integrity of /system for MDTP.\n");
-    }
-#endif /* USE_MDTP */
-
     set_perf_mode(false);
     return ret;
 }
@@ -630,11 +564,9 @@ install_package(const char* path, bool* wipe_cache, const char* install_file,
     modified_flash = true;
     auto start = std::chrono::system_clock::now();
 
-    int result = 0;
+    int result;
     std::vector<std::string> log_buffer;
-    if (needs_mount == true)
-            result = setup_install_mounts();
-    if (result != 0) {
+    if (setup_install_mounts() != 0) {
         LOGE("failed to set up expected mounts for install; aborting\n");
         result = INSTALL_ERROR;
     } else {

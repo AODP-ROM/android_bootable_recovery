@@ -23,72 +23,6 @@
 
 #include "voldclient.h"
 
-#define MAX_NR_INPUT_DEVICES    8
-#define MAX_NR_VKEYS            8
-
-/*
- * Simple representation of a (x,y) coordinate with convenience operators
- */
-struct point {
-    point() : x(0), y(0) {}
-    point operator+(const point& rhs) const {
-        point tmp;
-        tmp.x = x + rhs.x;
-        tmp.y = y + rhs.y;
-        return tmp;
-    }
-    point operator-(const point& rhs) const {
-        point tmp;
-        tmp.x = x - rhs.x;
-        tmp.y = y - rhs.y;
-        return tmp;
-    }
-
-    int         x;
-    int         y;
-};
-
-/*
- * Virtual key representation.  Valid when keycode != -1.
- */
-struct vkey {
-    vkey() : keycode(-1) {}
-    int         keycode;
-    point       min;
-    point       max;
-};
-
-/*
- * Input device representation.  Valid when fd != -1.
- * This holds all information and state related to a given input device.
- */
-struct input_device {
-    input_device() : fd(-1) {}
-
-    int         fd;
-    vkey        virtual_keys[MAX_NR_VKEYS];
-    point       touch_min;
-    point       touch_max;
-
-    int         rel_sum;            // Accumulated relative movement
-
-    bool        saw_pos_x;          // Did sequence have ABS_MT_POSITION_X?
-    bool        saw_pos_y;          // Did sequence have ABS_MT_POSITION_Y?
-    bool        saw_mt_report;      // Did sequence have SYN_MT_REPORT?
-    bool        saw_tracking_id;    // Did sequence have SYN_TRACKING_ID?
-    bool        in_touch;           // Are we in a touch event?
-    bool        in_swipe;           // Are we in a swipe event?
-
-    point       touch_pos;          // Current touch coordinates
-    point       touch_start;        // Coordinates of touch start
-    point       touch_track;        // Last tracked coordinates
-
-    int         slot_nr_active;
-    int         slot_first;
-    int         slot_current;
-    int         tracking_id;
-};
-
 // Abstract class for controlling the user interface during recovery.
 class RecoveryUI {
   public:
@@ -137,7 +71,6 @@ class RecoveryUI {
     virtual void PrintOnScreenOnly(const char* fmt, ...) __printflike(2, 3) = 0;
 
     virtual void ShowFile(const char* filename) = 0;
-    virtual void ClearText() = 0;
 
     // --- key handling ---
 
@@ -153,9 +86,6 @@ class RecoveryUI {
     // Returns true if you have the volume up/down and power trio typical
     // of phones and tablets, false otherwise.
     virtual bool HasThreeButtons();
-
-    virtual bool HasBackKey() const { return has_back_key; }
-    virtual bool HasHomeKey() const { return has_home_key; }
 
     // Erase any queued-up keys.
     virtual void FlushKeys();
@@ -183,13 +113,6 @@ class RecoveryUI {
 
     // --- menu display ---
 
-    virtual int MenuItemStart() const = 0;
-    virtual int MenuItemHeight() const = 0;
-
-    virtual int  GetSysbarHeight() = 0;
-    virtual int  GetSysbarState() = 0;
-    virtual void SetSysbarState(int state) = 0;
-
     // Display some header text followed by a menu of items, which appears
     // at the top of the screen (in place of any scrolling ui_print()
     // output, if necessary).
@@ -198,7 +121,7 @@ class RecoveryUI {
 
     // Set the menu highlight to the given index, wrapping if necessary.
     // Returns the actual item selected.
-    virtual int SelectMenu(int sel, bool abs = false) = 0;
+    virtual int SelectMenu(int sel) = 0;
 
     // End menu mode, resetting the text overlay so that ui_print()
     // statements will be displayed.
@@ -229,13 +152,6 @@ private:
     bool has_power_key;
     bool has_up_key;
     bool has_down_key;
-    bool has_back_key;
-    bool has_home_key;
-
-    input_device input_devices[MAX_NR_INPUT_DEVICES];
-
-    point fb_dimensions;
-    point min_swipe_px;
 
     struct key_timer_t {
         RecoveryUI* ui;
@@ -249,10 +165,7 @@ private:
 
     static int InputCallback(int fd, uint32_t epevents, void* data);
     int OnInputEvent(int fd, uint32_t epevents);
-    void ProcessKey(input_device* dev, int key_code, int updown);
-    void ProcessSyn(input_device* dev, int code, int value);
-    void ProcessAbs(input_device* dev, int code, int value);
-    void ProcessRel(input_device* dev, int code, int value);
+    void ProcessKey(int key_code, int updown);
 
     bool IsUsbConnected();
 
@@ -260,14 +173,6 @@ private:
 
     static void* time_key_helper(void* cookie);
     void time_key(int key_code, int count);
-
-    void process_touch(int fd, struct input_event *ev);
-    void calibrate_touch(input_device* dev);
-    void setup_vkeys(input_device* dev);
-    void calibrate_swipe();
-    void handle_press(input_device* dev);
-    void handle_release(input_device* dev);
-    void handle_gestures(input_device* dev);
 };
 
 #endif  // RECOVERY_UI_H
